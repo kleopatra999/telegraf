@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/influxdata/influxdb/services/graphite"
+	"github.com/influxdata/telegraf/plugins/parsers/graphite"
 
 	"github.com/influxdata/telegraf"
 	"github.com/influxdata/telegraf/plugins/inputs"
@@ -418,18 +418,14 @@ func (s *Statsd) parseName(bucket string) (string, string, map[string]string) {
 		}
 	}
 
-	o := graphite.Options{
-		Separator:   "_",
-		Templates:   s.Templates,
-		DefaultTags: tags,
-	}
-
 	var field string
 	name := bucketparts[0]
-	p, err := graphite.NewParserWithOptions(o)
+	p, err := graphite.NewGraphiteParser(".", s.Templates, nil)
 	if err == nil {
+		p.DefaultTags = tags
 		name, tags, field, _ = p.ApplyTemplate(name)
 	}
+
 	if s.ConvertNames {
 		name = strings.Replace(name, ".", "_", -1)
 		name = strings.Replace(name, "-", "__", -1)

@@ -1,12 +1,14 @@
 package kafka_consumer
 
 import (
+	"fmt"
 	"log"
 	"strings"
 	"sync"
 
 	"github.com/influxdata/telegraf"
 	"github.com/influxdata/telegraf/plugins/inputs"
+	"github.com/influxdata/telegraf/plugins/parsers"
 
 	"github.com/Shopify/sarama"
 	"github.com/wvanbergen/kafka/consumergroup"
@@ -19,6 +21,13 @@ type Kafka struct {
 	Consumer       *consumergroup.ConsumerGroup
 	PointBuffer    int
 	Offset         string
+
+	// Data Format Arguments:
+	DataFormat string
+	Separator  string
+	Templates  []string
+	TagKeys    []string
+	parser     parsers.Parser
 
 	sync.Mutex
 
@@ -46,6 +55,12 @@ var sampleConfig = `
   point_buffer = 100000
   # Offset (must be either "oldest" or "newest")
   offset = "oldest"
+
+  ### Data format to consume. This can be "json", "influx" or "graphite" (line-protocol)
+  ### Each data format has it's own unique set of configuration options, read
+  ### more about them here:
+  ### https://github.com/influxdata/telegraf/blob/master/DATA_FORMATS.md
+  data_format = "influx"
 `
 
 func (k *Kafka) SampleConfig() string {
@@ -60,6 +75,23 @@ func (k *Kafka) Start() error {
 	k.Lock()
 	defer k.Unlock()
 	var consumerErr error
+
+	if k.DataFormat == "" {
+		k.DataFormat = "influx"
+	}
+
+	var err error
+	k.parser, err = parsers.NewParser(&parsers.Config{
+		DataFormat: k.DataFormat,
+		Separator:  k.Separator,
+		Templates:  k.Templates,
+		TagKeys:    k.TagKeys,
+		MetricName: "kafka_consumer",
+	})
+
+	if err != nil {
+		return fmt.Errorf("kafka_consumer configuration error: %s ", err.Error())
+	}
 
 	config := consumergroup.NewConfig()
 	switch strings.ToLower(k.Offset) {
@@ -96,15 +128,15 @@ func (k *Kafka) Start() error {
 	k.metricC = make(chan telegraf.Metric, k.PointBuffer)
 
 	// Start the kafka message reader
-	go k.parser()
+	go k.receiver()
 	log.Printf("Started the kafka consumer service, peers: %v, topics: %v\n",
 		k.ZookeeperPeers, k.Topics)
 	return nil
 }
 
-// parser() reads all incoming messages from the consumer, and parses them into
+// receiver() reads all incoming messages from the consumer, and parses them into
 // influxdb metric points.
-func (k *Kafka) parser() {
+func (k *Kafka) receiver() {
 	for {
 		select {
 		case <-k.done:
@@ -112,13 +144,14 @@ func (k *Kafka) parser() {
 		case err := <-k.errs:
 			log.Printf("Kafka Consumer Error: %s\n", err.Error())
 		case msg := <-k.in:
-			metrics, err := telegraf.ParseMetrics(msg.Value)
+			metrics, err := k.parser.Parse(msg.Value)
 			if err != nil {
 				log.Printf("Could not parse kafka message: %s, error: %s",
 					string(msg.Value), err.Error())
 			}
 
 			for _, metric := range metrics {
+				fmt.Println(string(metric.Name()))
 				select {
 				case k.metricC <- metric:
 					continue
